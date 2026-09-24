@@ -1,0 +1,31 @@
+﻿openapi: 3.1.0
+info:
+  title: Codestra WhatsApp Application API
+  version: 0.1.0
+  description: Business/application layer. External effects are submitted only through Middleware V3.
+paths:
+  /healthz:
+    get:
+      responses:
+        "200": { description: Healthy }
+  /readyz:
+    get:
+      responses:
+        "200": { description: Readiness and Middleware registry dependency }
+  /platform/v1/whatsapp/contacts/eligibility:
+    post:
+      responses:
+        "200": { description: Eligibility decision }
+  /platform/v1/whatsapp/campaigns/validate:
+    post:
+      responses:
+        "200": { description: Campaign valid }
+        "422": { description: Campaign invalid }
+  /platform/v1/whatsapp/messages:
+    post:
+      description: Submit an eligible WhatsApp effect to Middleware V3. Fail-closed by default.
+      responses:
+        "202": { description: Middleware accepted }
+        "403": { description: Recipient not eligible }
+        "423": { description: Production/external sends disabled }
+        "503": { description: Middleware WhatsApp command family not registered/configured }
