@@ -1,0 +1,35 @@
+name: WhatsApp W3 quality
+
+on:
+  pull_request:
+    branches: [development, testing, staging, deployment, main]
+  push:
+    branches: [development, testing, staging, deployment, main, "feature/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: whatsapp-w3-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Syntax checks
+        run: npm run check
+      - name: Unit and contract tests
+        run: npm test
