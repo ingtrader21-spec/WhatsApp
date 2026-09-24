@@ -35,7 +35,7 @@ Each accepted event carries immutable event/provider/correlation/tenant identiti
 - same provider ID + same payload hash => idempotent duplicate readback;
 - same provider ID + different payload hash => `409 conflicting_duplicate` with audit evidence.
 
-The ledger is append-only JSONL and each append is fsynced before in-memory materialization. On restart the runtime reconstructs state and resumes accepted/retrying work. This implementation is a single-runtime durable application store; W5 must certify the persistent volume/topology used by staging and production before external activation.
+The ledger is append-only JSONL and each append is fsynced before in-memory materialization. W3 also computes its own canonical content fingerprint so duplicate safety does not trust the upstream hash alone. On restart the runtime reconstructs state and resumes accepted/retrying work. This implementation is a single-runtime durable application store; W5 must certify the persistent volume/topology used by staging and production before external activation.
 
 ## Conversation state machine
 
@@ -99,7 +99,7 @@ W3 provides:
 
 - durable persistence before processing;
 - duplicate-safe materialization keyed to inbound event identity;
-- bounded exponential retry schedule;
+- bounded exponential retry schedule with in-process wake-up timers and restart recovery;
 - dead-letter records after terminal/exhausted failures;
 - privileged replay with audit lineage;
 - poison/malformed event rejection before acceptance;

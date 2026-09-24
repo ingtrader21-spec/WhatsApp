@@ -20,6 +20,18 @@ function hash(input) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function contentFingerprint(content) {
+  return hash(stableJson(content));
+}
+
 function conversationIdFor(event) {
   return `wa_${hash(`${event.tenant_id}\n${event.sender_identity}\n${event.recipient_identity}`).slice(0, 32)}`;
 }
@@ -47,7 +59,7 @@ export function validateInboundEvent(event) {
   if (!/^\d{4}-\d\d-\d\dT/.test(String(event.ingested_at || "")) || Number.isNaN(Date.parse(event.ingested_at))) throw new DomainError("invalid_event", "ingested_at must be RFC3339", 422);
   if (!/^[a-f0-9]{64}$/.test(String(event.payload_hash || ""))) throw new DomainError("invalid_event", "payload_hash must be lowercase sha256", 422);
   if (!event.content || typeof event.content !== "object" || typeof event.content.type !== "string") throw new DomainError("invalid_event", "content.type is required", 422);
-  return structuredClone(event);
+  return { ...structuredClone(event), content_fingerprint: contentFingerprint(event.content) };
 }
 
 function nextRetry(attempt, baseRetryMs) {
@@ -61,6 +73,8 @@ export class ConversationService {
     this.store = options.store || new DurableConversationStore({ dataDir: config.dataDir });
     this.metrics = options.metrics || new W3Metrics();
     this.failureInjector = options.failureInjector || null;
+    this.ingressLocks = new Map();
+    this.retryTimers = new Map();
     this.readyPromise = this.#initialize();
   }
 
@@ -89,37 +103,81 @@ export class ConversationService {
     return audit;
   }
 
+  async #withIngressLock(key, fn) {
+    const previous = this.ingressLocks.get(key) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    const chain = previous.then(() => current);
+    this.ingressLocks.set(key, chain);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.ingressLocks.get(key) === chain) this.ingressLocks.delete(key);
+    }
+  }
+
+  #clearRetryTimer(eventId) {
+    const timer = this.retryTimers.get(eventId);
+    if (timer) clearTimeout(timer);
+    this.retryTimers.delete(eventId);
+  }
+
+  #scheduleRetry(eventId, nextAttemptAt) {
+    this.#clearRetryTimer(eventId);
+    const due = Date.parse(nextAttemptAt);
+    const delay = Number.isFinite(due) ? Math.max(0, due - Date.now()) : 0;
+    const timer = setTimeout(async () => {
+      this.retryTimers.delete(eventId);
+      const event = this.store.getEvent(eventId);
+      if (!event || event.processing_status !== "retrying") return;
+      try {
+        await this.#attemptProcess(eventId);
+        this.#refreshGauges();
+      } catch {
+        // #attemptProcess persists retry/dead-letter state; unexpected failures remain visible in durable status.
+      }
+    }, Math.min(delay, 300_000));
+    timer.unref?.();
+    this.retryTimers.set(eventId, timer);
+  }
+
   async ingest(rawEvent) {
     await this.ready();
     const event = validateInboundEvent(rawEvent);
-    const existing = this.store.getEventByProvider(event.tenant_id, event.provider_event_id);
-    if (existing) {
-      if (existing.payload_hash !== event.payload_hash) {
-        this.metrics.inc("codestra_whatsapp_w3_conflicting_duplicates_total", { tenant: event.tenant_id });
-        await this.#audit({ tenantId: event.tenant_id, actorId: "system:ingress", action: "inbound.conflicting_duplicate", eventId: existing.event_id, reason: "provider_event_id_payload_hash_mismatch" });
-        throw new DomainError("conflicting_duplicate", "provider event ID already exists with a different payload hash", 409);
+    const ingressKey = `${event.tenant_id}:${event.provider_event_id}`;
+    return this.#withIngressLock(ingressKey, async () => {
+      const existing = this.store.getEventByProvider(event.tenant_id, event.provider_event_id);
+      if (existing) {
+        if (existing.payload_hash !== event.payload_hash || existing.content_fingerprint !== event.content_fingerprint) {
+          this.metrics.inc("codestra_whatsapp_w3_conflicting_duplicates_total", { tenant: event.tenant_id });
+          await this.#audit({ tenantId: event.tenant_id, actorId: "system:ingress", action: "inbound.conflicting_duplicate", eventId: existing.event_id, reason: "provider_event_id_payload_mismatch" });
+          throw new DomainError("conflicting_duplicate", "provider event ID already exists with different normalized content", 409);
+        }
+        this.metrics.inc("codestra_whatsapp_w3_duplicates_total", { tenant: event.tenant_id });
+        return { duplicate: true, event: existing, conversation: existing.conversation_id ? this.store.getConversation(existing.conversation_id) : null };
       }
-      this.metrics.inc("codestra_whatsapp_w3_duplicates_total", { tenant: event.tenant_id });
-      return { duplicate: true, event: existing, conversation: existing.conversation_id ? this.store.getConversation(existing.conversation_id) : null };
-    }
 
-    const accepted = {
-      ...event,
-      processing_status: "accepted",
-      attempts: 0,
-      next_attempt_at: null,
-      last_error: null,
-      conversation_id: null,
-      processed_at: null
-    };
-    await this.store.append("inbound.accepted", { event: accepted });
-    this.metrics.inc("codestra_whatsapp_w3_inbound_events_total", { tenant: event.tenant_id, event_type: event.event_type });
-    const result = await this.#attemptProcess(event.event_id);
-    this.#refreshGauges();
-    return { duplicate: false, ...result };
+      const accepted = {
+        ...event,
+        processing_status: "accepted",
+        attempts: 0,
+        next_attempt_at: null,
+        last_error: null,
+        conversation_id: null,
+        processed_at: null
+      };
+      await this.store.append("inbound.accepted", { event: accepted });
+      this.metrics.inc("codestra_whatsapp_w3_inbound_events_total", { tenant: event.tenant_id, event_type: event.event_type });
+      const result = await this.#attemptProcess(event.event_id);
+      this.#refreshGauges();
+      return { duplicate: false, ...result };
+    });
   }
 
   async #attemptProcess(eventId, { replay = false } = {}) {
+    this.#clearRetryTimer(eventId);
     const event = this.store.getEvent(eventId);
     if (!event) throw new DomainError("event_not_found", "event not found", 404);
     const attempt = Number(event.attempts || 0) + 1;
@@ -150,6 +208,7 @@ export class ConversationService {
       const next = nextRetry(attempt, this.config.baseRetryMs);
       await this.store.append("inbound.status", { event_id: eventId, patch: { processing_status: "retrying", last_error: error.code || "processing_error", next_attempt_at: next } });
       this.metrics.inc("codestra_whatsapp_w3_retries_total", { tenant: event.tenant_id });
+      this.#scheduleRetry(eventId, next);
       return { event: this.store.getEvent(eventId), retrying: true, conversation: null };
     }
   }
@@ -278,7 +337,10 @@ export class ConversationService {
     await this.store.init();
     const pending = [...this.store.events.values()].filter((e) => ["accepted", "retrying", "processing"].includes(e.processing_status));
     for (const event of pending) {
-      if (event.processing_status === "retrying" && event.next_attempt_at && Date.parse(event.next_attempt_at) > Date.now()) continue;
+      if (event.processing_status === "retrying" && event.next_attempt_at && Date.parse(event.next_attempt_at) > Date.now()) {
+        this.#scheduleRetry(event.event_id, event.next_attempt_at);
+        continue;
+      }
       await this.#attemptProcess(event.event_id);
     }
   }

@@ -261,3 +261,48 @@ test("production configuration cannot disable operator authentication", () => {
     /cannot be disabled in production/
   );
 });
+
+
+test("concurrent duplicate ingress is serialized before acceptance", async () => {
+  const dir = await tempDir();
+  const svc = new ConversationService(makeConfig(dir));
+  const event = inbound();
+  const [a, b] = await Promise.all([svc.ingest(event), svc.ingest(structuredClone(event))]);
+  assert.equal([a.duplicate, b.duplicate].filter(Boolean).length, 1);
+  const conversation = a.conversation || b.conversation;
+  assert.equal(svc.store.getMessages(conversation.conversation_id).length, 1);
+  assert.equal(svc.store.events.size, 1);
+});
+
+test("same provider event id with changed content conflicts even if supplied payload hash is reused", async () => {
+  const dir = await tempDir();
+  const svc = new ConversationService(makeConfig(dir));
+  const event = inbound();
+  await svc.ingest(event);
+  const changed = { ...event, content: { type: "text", text: "changed but reused provider hash" } };
+  await assert.rejects(() => svc.ingest(changed), (error) => error.code === "conflicting_duplicate" && error.status === 409);
+});
+
+test("retry timer processes due work without requiring a service restart", async () => {
+  const dir = await tempDir();
+  let failures = 1;
+  const svc = new ConversationService(makeConfig(dir, { WHATSAPP_MAX_INBOUND_ATTEMPTS: "3", WHATSAPP_BASE_RETRY_MS: "5" }), {
+    failureInjector: async () => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("transient dependency failure");
+      }
+    }
+  });
+  const event = inbound();
+  const first = await svc.ingest(event);
+  assert.equal(first.event.processing_status, "retrying");
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline && svc.store.getEvent(event.event_id).processing_status !== "processed") {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const recovered = svc.store.getEvent(event.event_id);
+  assert.equal(recovered.processing_status, "processed");
+  assert.equal(recovered.attempts, 2);
+  assert.equal(svc.store.getMessages(recovered.conversation_id).length, 1);
+});
