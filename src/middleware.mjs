@@ -1,4 +1,4 @@
-﻿import { requireString } from "./domain.mjs";
+import { requireString } from "./domain.mjs";
 
 export async function submitMiddlewareCommand(config, input, authorization) {
   const commandType = requireString(config.middlewareCommandType, "MIDDLEWARE_COMMAND_TYPE");

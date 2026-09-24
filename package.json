@@ -1,12 +1,14 @@
-﻿{
+{
   "name": "codestra-whatsapp-app",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Codestra WhatsApp business/application layer over Middleware V3",
   "scripts": {
     "start": "node src/server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "test:w3": "node --test test/w3.test.mjs",
+    "check": "node --check src/server.mjs && node --check src/w3/store.mjs && node --check src/w3/service.mjs && node --check src/auth.mjs"
   },
   "engines": {
     "node": ">=20"

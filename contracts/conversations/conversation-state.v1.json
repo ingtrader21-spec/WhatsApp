@@ -1,0 +1,30 @@
+{
+  "schema_version": "whatsapp.conversation-state.v1",
+  "entity": "Conversation",
+  "initial_state": "new",
+  "states": ["new", "active", "waiting_customer", "waiting_agent", "escalated", "resolved", "reopened"],
+  "transitions": {
+    "new": ["active", "waiting_agent", "escalated", "resolved"],
+    "active": ["waiting_customer", "waiting_agent", "escalated", "resolved"],
+    "waiting_customer": ["active", "waiting_agent", "escalated", "resolved"],
+    "waiting_agent": ["active", "escalated", "resolved"],
+    "escalated": ["active", "waiting_agent", "resolved"],
+    "resolved": ["reopened"],
+    "reopened": ["active", "waiting_agent", "escalated", "resolved"]
+  },
+  "guards": {
+    "tenant_scoped": true,
+    "optimistic_concurrency_required": true,
+    "audit_event_required": true,
+    "reason_required_for": ["resolved", "reopened", "escalated"]
+  },
+  "human_takeover": {
+    "target_state": "waiting_agent",
+    "cancel_pending_automation": true,
+    "invalidate_automation_for_prior_conversation_version": true
+  },
+  "out_of_order_events": {
+    "strategy": "evaluate_against_event_and_state_version",
+    "allow_silent_overwrite": false
+  }
+}

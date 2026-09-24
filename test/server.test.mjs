@@ -1,11 +1,15 @@
-﻿import test from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import os from "node:os";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { createApp } from "../src/server.mjs";
 import { loadConfig } from "../src/config.mjs";
 
 async function withServer(env, fn) {
-  const server = createApp(loadConfig({ PORT: "0", ...env }));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codestra-whatsapp-server-"));
+  const server = createApp(loadConfig({ PORT: "0", WHATSAPP_DATA_DIR: dataDir, WHATSAPP_AUTH_REQUIRED: "false", WHATSAPP_INTERNAL_API_TOKEN: "test-internal", ...env }));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const port = server.address().port;
@@ -39,11 +43,12 @@ test("production send is fail-closed by default", async () => {
   });
 });
 
-test("readiness reports Middleware registry dependency", async () => {
+test("readiness reports durable W3 store and Middleware registry dependency", async () => {
   await withServer({}, async (base) => {
     const res = await fetch(base + "/readyz");
     const body = await res.json();
     assert.equal(body.middleware_command_type_configured, false);
     assert.equal(body.safe_mode, true);
+    assert.equal(body.w3_durable_store_ready, true);
   });
 });

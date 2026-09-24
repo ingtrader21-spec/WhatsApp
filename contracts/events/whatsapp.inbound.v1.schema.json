@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codestra.co/contracts/whatsapp/events/whatsapp.inbound.v1.schema.json",
+  "title": "Codestra WhatsApp Inbound Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "provider_event_id",
+    "correlation_id",
+    "tenant_id",
+    "channel",
+    "sender_identity",
+    "recipient_identity",
+    "event_type",
+    "provider_timestamp",
+    "ingested_at",
+    "payload_hash",
+    "content",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": { "const": "whatsapp.inbound.v1" },
+    "event_id": { "type": "string", "format": "uuid" },
+    "provider_event_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "channel": { "const": "whatsapp" },
+    "sender_identity": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "recipient_identity": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "event_type": {
+      "type": "string",
+      "enum": ["message.received", "message.status", "conversation.updated", "contact.updated"]
+    },
+    "provider_timestamp": { "type": "string", "format": "date-time" },
+    "ingested_at": { "type": "string", "format": "date-time" },
+    "payload_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "content": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["text", "image", "audio", "video", "document", "location", "contact", "interactive", "unknown"]
+        },
+        "text": { "type": ["string", "null"] }
+      }
+    },
+    "metadata": { "type": "object", "additionalProperties": true }
+  }
+}
