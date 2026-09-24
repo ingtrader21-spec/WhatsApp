@@ -2,63 +2,21 @@
   "schema_version": "whatsapp.conversation-state.v1",
   "entity": "Conversation",
   "initial_state": "new",
-  "states": [
-    "new",
-    "active",
-    "waiting_customer",
-    "waiting_agent",
-    "escalated",
-    "resolved",
-    "reopened"
-  ],
+  "states": ["new", "active", "waiting_customer", "waiting_agent", "escalated", "resolved", "reopened"],
   "transitions": {
-    "new": [
-      "active",
-      "waiting_agent",
-      "escalated",
-      "resolved"
-    ],
-    "active": [
-      "waiting_customer",
-      "waiting_agent",
-      "escalated",
-      "resolved"
-    ],
-    "waiting_customer": [
-      "active",
-      "waiting_agent",
-      "escalated",
-      "resolved"
-    ],
-    "waiting_agent": [
-      "active",
-      "escalated",
-      "resolved"
-    ],
-    "escalated": [
-      "active",
-      "waiting_agent",
-      "resolved"
-    ],
-    "resolved": [
-      "reopened"
-    ],
-    "reopened": [
-      "active",
-      "waiting_agent",
-      "escalated",
-      "resolved"
-    ]
+    "new": ["active", "waiting_agent", "escalated", "resolved"],
+    "active": ["waiting_customer", "waiting_agent", "escalated", "resolved"],
+    "waiting_customer": ["active", "waiting_agent", "escalated", "resolved"],
+    "waiting_agent": ["active", "escalated", "resolved"],
+    "escalated": ["active", "waiting_agent", "resolved"],
+    "resolved": ["reopened"],
+    "reopened": ["active", "waiting_agent", "escalated", "resolved"]
   },
   "guards": {
     "tenant_scoped": true,
     "optimistic_concurrency_required": true,
     "audit_event_required": true,
-    "reason_required_for": [
-      "resolved",
-      "reopened",
-      "escalated"
-    ]
+    "reason_required_for": ["resolved", "reopened", "escalated"]
   },
   "human_takeover": {
     "target_state": "waiting_agent",

@@ -1,371 +1,137 @@
 # W3 — Enterprise Conversations & Automation Architecture
 
-Status: **active design authority for W3**
+Status: **implemented W3 authority; staging certification still required**
 GitHub mission: https://github.com/ingtrader21-spec/WhatsApp/issues/4
 Branch: `feature/w3-conversations-automation`
 Base: `development`
 
-## 1. Purpose
+## Purpose and boundaries
 
-W3 defines the production-grade application authority for inbound WhatsApp conversations, routing, automation, agent takeover, escalation, readback, replay, audit and operational recovery.
+W3 is the application authority for inbound events, conversations, routing/assignment, automation state, human handoff, audit, DLQ/replay and operator readback.
 
-The design is intentionally transport-independent. Provider sessions and provider-specific transport remain in Evolution-API. All external messaging effects are issued through Middleware V3.
+- W1 remains authoritative for contact/channel identity, consent, suppression and eligibility.
+- W2 remains authoritative for outbound campaign execution and business-level message jobs.
+- Middleware V3 remains authoritative for command idempotency, ledger/outbox/workers, provider effects and reconciliation.
+- Evolution-API remains the provider connection/session transport gateway.
 
-## 2. Authority boundaries
+No W3 code calls provider APIs directly.
 
-| Domain | Authority |
-|---|---|
-| Contact/channel identity, consent, suppression, eligibility | W1 |
-| Campaign scheduling, audience execution, per-recipient outbound jobs | W2 |
-| Conversations, inbound events, routing, automation, human handoff | **W3** |
-| Operator web experience | W4 |
-| Cross-system integration, staging and production certification | W5 |
-| Command ledger/outbox/worker/reconciliation/provider effect | Middleware V3 |
-| Provider connection/session transport | Evolution-API |
-
-W3 must consume W1/W2 contracts and must not create parallel contact, consent, campaign or provider-session authority.
-
-## 3. End-to-end architecture
+## Runtime flow
 
 ```text
-WhatsApp Provider
-      |
-      v
-Evolution transport gateway
-      |
-      v
-Middleware V3 :8095
-      |
-      v
-Normalized inbound event
-      |
-      v
-Durable W3 event ledger
-      |
-      +--> Idempotency / duplicate detector
-      |
-      v
-Conversation state machine
-      |
-      v
-Routing + policy engine
-      |
-      +--> Automation decision ----> auditable response command ----> Middleware V3
-      |
-      +--> Human queue / assignment / escalation
-      |
-      v
-Operator readback APIs + metrics + traces + audit
+Provider -> Evolution -> Middleware V3 -> normalized whatsapp.inbound.v1 event
+  -> durable W3 ledger -> dedupe -> conversation state -> policy/routing
+  -> automation state or human queue -> auditable command boundary -> Middleware V3
 ```
 
-### Processing rule
+No assignment/automation processing occurs before durable event persistence.
 
-No automation or assignment side effect may occur until the inbound event is durably recorded and assigned an immutable event identity.
+## Durable event authority
 
-## 4. Versioned inbound event envelope
+The versioned event contract is `contracts/events/whatsapp.inbound.v1.schema.json`.
 
-Initial logical contract:
+Each accepted event carries immutable event/provider/correlation/tenant identities, timestamps and a payload hash. `(tenant_id, provider_event_id)` is the duplicate authority:
 
-```json
-{
-  "schema_version": "whatsapp.inbound.v1",
-  "event_id": "uuid",
-  "provider_event_id": "string",
-  "correlation_id": "uuid",
-  "tenant_id": "uuid",
-  "channel": "whatsapp",
-  "sender_identity": "normalized-channel-identity",
-  "recipient_identity": "normalized-channel-identity",
-  "event_type": "message.received",
-  "provider_timestamp": "RFC3339",
-  "ingested_at": "RFC3339",
-  "payload_hash": "sha256",
-  "content": {
-    "type": "text",
-    "text": "..."
-  },
-  "metadata": {}
-}
-```
+- same provider ID + same payload hash => idempotent duplicate readback;
+- same provider ID + different payload hash => `409 conflicting_duplicate` with audit evidence.
 
-Rules:
+The ledger is append-only JSONL and each append is fsynced before in-memory materialization. On restart the runtime reconstructs state and resumes accepted/retrying work. This implementation is a single-runtime durable application store; W5 must certify the persistent volume/topology used by staging and production before external activation.
 
-- `event_id` is immutable.
-- `provider_event_id + tenant_id` participates in duplicate detection.
-- `payload_hash` detects conflicting duplicates.
-- Raw provider payload may be retained only according to data-retention policy.
-- Logs must not emit secrets or unnecessary message content.
+## Conversation state machine
 
-## 5. Core entities
-
-### InboundEvent
-Immutable ingestion record with processing state, attempt count, next-attempt time, duplicate relation, DLQ state and replay lineage.
-
-### Conversation
-Tenant-scoped deterministic conversation identity and current lifecycle state.
-
-### ConversationMessage
-Immutable customer-visible or operator-visible message record linked to an inbound event or outbound command.
-
-### ConversationAssignment
-Current owner/team plus versioned assignment history.
-
-### AutomationDecision
-Input facts, policy result, confidence, selected action, reason code and model/config version where AI is involved.
-
-### AutomationAction
-Pending/executed/cancelled application action. Must be idempotent.
-
-### AgentHandoff
-Explicit transition from automation to human control, including reason and context watermark.
-
-### Escalation
-Supervisor/team escalation state with SLA metadata.
-
-### AuditEvent
-Append-only security and operational evidence.
-
-### DeadLetterEvent
-Failed event processing record with reason, attempts, remediation state and replay lineage.
-
-## 6. Conversation lifecycle
-
-Allowed lifecycle:
+The versioned transition contract is `contracts/conversations/conversation-state.v1.json`.
 
 ```text
-new
-  -> active
-  -> waiting_customer
-  -> waiting_agent
-  -> escalated
-  -> resolved
-  -> reopened
+new -> active -> waiting_customer -> waiting_agent -> escalated -> resolved -> reopened
 ```
 
-Transitions must be:
+Transitions are tenant-scoped, audited and versioned. Operator mutations require `expected_version`; stale versions fail with `409` instead of overwriting newer state. New inbound traffic to a resolved conversation reopens it explicitly.
 
-- explicit and validated;
-- versioned or optimistic-lock protected;
-- tenant-scoped;
-- audit recorded;
-- safe against duplicate/out-of-order events.
+Out-of-order inbound events may be materialized in the timeline but may not regress `last_inbound_at`.
 
-Resolution and reopen operations require a reason code.
+## Human takeover and automation safety
 
-## 7. Assignment and routing
+Automation decisions are durable records. Human claim/assignment, escalation, opt-out and manual automation pause cancel pending automation for that conversation. Customer-visible effect execution remains behind the existing Middleware V3 command boundary and production kill switches.
 
-Routing inputs may include:
+Opt-out phrases create a durable suppression request and immediately pause W3 automation. W1 remains the final suppression/eligibility authority.
 
-- tenant/business unit;
-- skill/team;
-- service/product domain;
-- business hours;
-- customer priority;
-- language;
-- current queue depth;
-- agent availability.
+## Security
 
-Supported strategy contracts:
+Operator APIs use RS256 JWT verification with issuer/audience checks and Keycloak-style role extraction. Required roles are:
 
-- deterministic fallback queue;
-- round-robin;
-- least-loaded;
-- explicit supervisor assignment.
+- `whatsapp_agent`
+- `whatsapp_supervisor`
+- `whatsapp_admin`
 
-Every automatic assignment records the evaluated rules and selected reason.
+JWTs must contain `sub` and a tenant claim (`tenant_id`, `tenant` or `organization_id`). Tenant mismatch returns not-found semantics to avoid cross-tenant disclosure.
 
-## 8. Automation policy engine
+Internal ingestion and metrics require `x-internal-token`. Production refuses configuration with operator authentication disabled.
 
-Automation executes only after policy evaluation.
+## Canonical API authority
 
-Required controls:
+### Internal
 
-- per-tenant enablement;
-- per-conversation pause;
-- explicit confidence threshold;
-- deterministic fallback;
-- tool/action allowlist;
-- W1 eligibility/suppression readback;
-- no fabricated price, availability, guarantee, certification or completion claims;
-- no marketing automation after opt-out or suppression;
-- no customer-visible duplicate after retry or replay.
-
-Human takeover immediately invalidates or cancels pending automation for the conversation version being taken over.
-
-## 9. Human handoff contract
-
-A handoff must preserve:
-
-- full permitted conversation history;
-- customer identity reference;
-- service/product context;
-- current automation state;
-- reason for handoff;
-- SLA state;
-- prior assignments;
-- pending actions.
-
-Operator notes are never customer-visible unless deliberately converted into a response.
-
-## 10. API surfaces
-
-Proposed versioned application API authority:
-
-### Operator/readback
-- `GET /v1/conversations`
-- `GET /v1/conversations/{conversation_id}`
-- `GET /v1/conversations/{conversation_id}/timeline`
-- `POST /v1/conversations/{conversation_id}/claim`
-- `POST /v1/conversations/{conversation_id}/assign`
-- `POST /v1/conversations/{conversation_id}/escalate`
-- `POST /v1/conversations/{conversation_id}/resolve`
-- `POST /v1/conversations/{conversation_id}/reopen`
-- `POST /v1/conversations/{conversation_id}/automation/pause`
-- `POST /v1/conversations/{conversation_id}/automation/resume`
-
-### Internal ingestion/operations
 - `POST /internal/v1/inbound-events`
 - `GET /internal/v1/inbound-events/{event_id}`
-- `GET /internal/v1/dead-letters`
-- `POST /internal/v1/dead-letters/{dead_letter_id}/replay`
+- `GET /internal/metrics`
 
-Internal routes are never exposed directly through the public edge.
+Internal routes are not public-edge routes.
 
-All collection APIs require cursor pagination and server-side filtering.
+### Operator
 
-## 11. Reliability model
+- `GET /platform/v1/whatsapp/conversations`
+- `GET /platform/v1/whatsapp/conversations/{conversation_id}`
+- `GET /platform/v1/whatsapp/conversations/{conversation_id}/timeline`
+- `POST /platform/v1/whatsapp/conversations/{conversation_id}/claim`
+- `POST /platform/v1/whatsapp/conversations/{conversation_id}/assign`
+- `POST /platform/v1/whatsapp/conversations/{conversation_id}/escalate`
+- `POST /platform/v1/whatsapp/conversations/{conversation_id}/resolve`
+- `POST /platform/v1/whatsapp/conversations/{conversation_id}/reopen`
+- `POST /platform/v1/whatsapp/conversations/{conversation_id}/automation/{pause|resume}`
+- `GET /platform/v1/whatsapp/dead-letters`
+- `POST /platform/v1/whatsapp/dead-letters/{dead_letter_id}/replay`
 
-### Delivery semantics
-W3 targets **at-least-once event delivery with effectively-once customer-visible effects** through idempotency and command dedupe.
+Collections are server-filtered and cursor-paginated.
 
-### Mandatory recovery controls
-- persistence before processing;
-- bounded retry with exponential backoff and jitter;
-- idempotency keys;
-- duplicate detection;
-- DLQ;
-- authorized replay;
-- poison-message quarantine;
-- deterministic worker restart recovery;
-- queue/backlog limits;
-- circuit-breaking around downstream dependencies.
+## Failure recovery
 
-### Non-negotiable invariant
-**Zero silent message loss.** Every accepted inbound event must be either processed, retrying, dead-lettered, quarantined or explicitly rejected with evidence.
+W3 provides:
 
-## 12. Security and privacy
+- durable persistence before processing;
+- duplicate-safe materialization keyed to inbound event identity;
+- bounded exponential retry schedule;
+- dead-letter records after terminal/exhausted failures;
+- privileged replay with audit lineage;
+- poison/malformed event rejection before acceptance;
+- restart reconstruction and pending-work recovery;
+- no silent overwrite on stale operator state.
 
-- tenant isolation on every entity and query;
-- Keycloak-backed RBAC;
-- agent, supervisor, administrator and system scopes;
-- replay restricted to privileged roles;
-- append-only audit events;
-- no secrets in payloads/logs;
-- PII-minimized structured logs;
-- retention/deletion policy hooks;
-- rate limits and abuse controls;
-- internal APIs protected from public ingress.
+The certification invariant is **zero silent accepted-event loss**: an accepted event is processed, retrying, dead-lettered, or explicitly represented in durable state.
 
-## 13. Observability
+## Observability
 
-### Metrics
-- inbound events/sec;
-- duplicate rate;
-- processing latency;
-- queue depth;
-- retry count/rate;
-- DLQ size/growth;
-- automation decision rate;
-- human-handoff rate;
-- unresolved conversations;
-- assignment latency;
-- SLA breach count/rate;
-- outbound command failure rate.
+`GET /internal/metrics` exposes W3 counters/gauges including inbound events, duplicates, conflicting duplicates, processed events, retries, dead letters, replays, handoffs, escalations, active conversation count and pending automation count.
 
-### Logs
-Structured fields must include, where applicable:
+Audit records carry tenant, actor, action, conversation/event correlation and reason metadata. Application error responses suppress unexpected internal exception messages.
 
-- tenant_id;
-- correlation_id;
-- event_id;
-- conversation_id;
-- command_id;
-- assignment_id;
-- automation_decision_id;
-- outcome/reason_code.
+## Initial service objectives
 
-### Tracing
-Trace continuity must cover:
+Staging must prove:
+
+- zero duplicate customer-visible effects in retry/replay tests;
+- zero accepted-event loss through restart tests;
+- deterministic stale-version rejection;
+- tenant isolation;
+- immediate opt-out automation pause;
+- successful DLQ recovery without duplicate message materialization;
+- exact-head CI pass on supported Node versions.
+
+## Promotion gate
+
+W3 can merge to `development` when exact-head CI and independent review are green. Environment promotion remains:
 
 ```text
-Evolution -> Middleware V3 -> W3 ingestion -> state transition -> automation/assignment -> Middleware V3 outbound command
+feature/w3-conversations-automation -> development -> testing -> staging -> deployment -> main
 ```
 
-### Health
-Expose health/readiness signals separately. Readiness must fail when W3 cannot safely persist or process new inbound work.
-
-## 14. Initial service objectives
-
-These are engineering targets subject to staging capacity validation:
-
-- committed inbound event durability: no acknowledged event without durable record;
-- duplicate customer-visible effect rate: 0 in certification tests;
-- replay duplicate-effect rate: 0 in certification tests;
-- conversation readback freshness: near-real-time after committed transition;
-- recovery: deterministic after worker restart without manual data repair;
-- observability: all failed processing paths produce metric + structured-log evidence.
-
-## 15. Test and certification matrix
-
-Required automated coverage:
-
-- duplicate provider event;
-- conflicting duplicate payload;
-- out-of-order event;
-- worker crash after persistence;
-- worker crash before state transition;
-- downstream timeout;
-- retry after timeout;
-- duplicate retry;
-- low-confidence automation;
-- forbidden action/tool;
-- opt-out detected mid-conversation;
-- suppression already active;
-- human takeover during pending automation;
-- assignment race;
-- agent unavailable;
-- tenant isolation violation;
-- unauthorized replay;
-- DLQ replay;
-- replay after original success;
-- stale version/concurrency conflict;
-- outage and recovery;
-- malformed/poison event.
-
-## 16. Promotion gate
-
-W3 may merge into `development` only when:
-
-1. event/domain schemas are versioned and reviewed;
-2. durable/idempotent ingestion is implemented;
-3. conversation state transitions are tested;
-4. human takeover is duplicate-safe;
-5. opt-out/suppression policy integration is tested;
-6. tenant/RBAC/audit tests pass;
-7. DLQ/replay tests pass;
-8. metrics/logs/traces are present;
-9. exact-head tests pass;
-10. PR includes runtime/readback evidence and known risks.
-
-Environment promotion remains:
-
-```text
-feature/w3-conversations-automation
-  -> development
-  -> testing
-  -> staging
-  -> deployment
-  -> main
-```
-
-No production messaging capability is enabled by this architecture document.
+No current W3 change enables production messaging. W5 still owns staging persistence/topology, Middleware registry integration, rollback rehearsal and explicit production approval.

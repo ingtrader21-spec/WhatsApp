@@ -1,31 +1,297 @@
-﻿openapi: 3.1.0
+openapi: 3.1.0
 info:
   title: Codestra WhatsApp Application API
-  version: 0.1.0
-  description: Business/application layer. External effects are submitted only through Middleware V3.
+  version: 0.2.0
+  description: >-
+    Business/application control plane for WhatsApp. Provider effects are submitted only through
+    Middleware V3. W3 owns durable inbound events, conversations, routing, automation state,
+    human handoff, audit readback and dead-letter recovery.
+servers:
+  - url: /
+tags:
+  - { name: Health }
+  - { name: W1 }
+  - { name: W2 }
+  - { name: W3 Conversations }
+  - { name: W3 Internal }
 paths:
   /healthz:
     get:
+      tags: [Health]
       responses:
-        "200": { description: Healthy }
+        "200": { description: Process healthy }
   /readyz:
     get:
+      tags: [Health]
       responses:
-        "200": { description: Readiness and Middleware registry dependency }
+        "200": { description: Durable W3 store initialized and application ready }
+  /internal/metrics:
+    get:
+      tags: [W3 Internal]
+      security: [{ internalToken: [] }]
+      responses:
+        "200": { description: Prometheus text exposition }
+        "401": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /internal/v1/inbound-events:
+    post:
+      tags: [W3 Internal]
+      security: [{ internalToken: [] }]
+      summary: Durably accept one normalized inbound event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InboundEvent" }
+      responses:
+        "200": { description: Duplicate event already accepted, content-equivalent }
+        "202": { description: Event durably accepted for processing }
+        "409": { description: Conflicting duplicate provider event }
+        "422": { $ref: "#/components/responses/Error" }
+  /internal/v1/inbound-events/{eventId}:
+    get:
+      tags: [W3 Internal]
+      security: [{ internalToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/EventId" }
+      responses:
+        "200": { description: Event processing readback }
+        "404": { $ref: "#/components/responses/Error" }
   /platform/v1/whatsapp/contacts/eligibility:
     post:
+      tags: [W1]
       responses:
-        "200": { description: Eligibility decision }
+        "200": { description: Deterministic eligibility decision }
   /platform/v1/whatsapp/campaigns/validate:
     post:
+      tags: [W2]
       responses:
         "200": { description: Campaign valid }
         "422": { description: Campaign invalid }
   /platform/v1/whatsapp/messages:
     post:
+      tags: [W2]
       description: Submit an eligible WhatsApp effect to Middleware V3. Fail-closed by default.
       responses:
         "202": { description: Middleware accepted }
         "403": { description: Recipient not eligible }
         "423": { description: Production/external sends disabled }
         "503": { description: Middleware WhatsApp command family not registered/configured }
+  /platform/v1/whatsapp/conversations:
+    get:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: assigned_to, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        "200": { description: Tenant-scoped paginated conversation list }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /platform/v1/whatsapp/conversations/{conversationId}:
+    get:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+      responses:
+        "200": { description: Conversation readback }
+        "404": { $ref: "#/components/responses/Error" }
+  /platform/v1/whatsapp/conversations/{conversationId}/timeline:
+    get:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+      responses:
+        "200": { description: Ordered message, assignment, automation and audit timeline }
+  /platform/v1/whatsapp/conversations/{conversationId}/claim:
+    post:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VersionMutation" }
+      responses:
+        "200": { description: Conversation claimed; pending automation cancelled }
+        "409": { description: Stale conversation version }
+        "428": { description: expected_version required }
+  /platform/v1/whatsapp/conversations/{conversationId}/assign:
+    post:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/VersionMutation" }
+                - type: object
+                  required: [actor_id]
+                  properties:
+                    actor_id: { type: string }
+                    team: { type: [string, "null"] }
+                    reason: { type: string }
+      responses:
+        "200": { description: Supervisor/admin reassignment applied with audit evidence }
+        "409": { description: Stale conversation version }
+  /platform/v1/whatsapp/conversations/{conversationId}/escalate:
+    post:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonMutation" }
+      responses:
+        "200": { description: Conversation escalated }
+  /platform/v1/whatsapp/conversations/{conversationId}/resolve:
+    post:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonMutation" }
+      responses:
+        "200": { description: Conversation resolved with reason }
+  /platform/v1/whatsapp/conversations/{conversationId}/reopen:
+    post:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonMutation" }
+      responses:
+        "200": { description: Conversation reopened with reason }
+  /platform/v1/whatsapp/conversations/{conversationId}/automation/{action}:
+    post:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ConversationId" }
+        - name: action
+          in: path
+          required: true
+          schema: { type: string, enum: [pause, resume] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonMutation" }
+      responses:
+        "200": { description: Automation state changed with audit evidence }
+  /platform/v1/whatsapp/dead-letters:
+    get:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Admin-only tenant-scoped dead-letter list }
+  /platform/v1/whatsapp/dead-letters/{deadLetterId}/replay:
+    post:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: deadLetterId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Authorized replay attempted with audit lineage }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 JWT with subject, tenant and whatsapp_agent/supervisor/admin role.
+    internalToken:
+      type: apiKey
+      in: header
+      name: x-internal-token
+  parameters:
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      schema: { type: string }
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    InboundEvent:
+      type: object
+      additionalProperties: false
+      required: [schema_version, event_id, provider_event_id, correlation_id, tenant_id, channel, sender_identity, recipient_identity, event_type, provider_timestamp, ingested_at, payload_hash, content, metadata]
+      properties:
+        schema_version: { const: whatsapp.inbound.v1 }
+        event_id: { type: string, format: uuid }
+        provider_event_id: { type: string, minLength: 1 }
+        correlation_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        channel: { const: whatsapp }
+        sender_identity: { type: string, minLength: 1 }
+        recipient_identity: { type: string, minLength: 1 }
+        event_type: { type: string, enum: [message.received, message.status, conversation.updated, contact.updated] }
+        provider_timestamp: { type: string, format: date-time }
+        ingested_at: { type: string, format: date-time }
+        payload_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
+        content:
+          type: object
+          required: [type]
+          additionalProperties: true
+          properties:
+            type: { type: string }
+            text: { type: [string, "null"] }
+        metadata: { type: object, additionalProperties: true }
+    VersionMutation:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+    ReasonMutation:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 1 }
+  responses:
+    Error:
+      description: Fail-closed error response
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message, retryable]
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+                  retryable: { type: boolean }
