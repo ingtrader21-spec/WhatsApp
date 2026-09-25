@@ -242,6 +242,105 @@ paths:
         "401": { description: Authentication required }
         "403": { description: Tenant or role denied }
         "404": { description: Operation not found }
+  /platform/v1/whatsapp/me:
+    get:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Current tenant-scoped operator identity and roles }
+  /platform/v1/whatsapp/dashboard:
+    get:
+      tags: [W3 Conversations]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Tenant-scoped agent-console business and conversation summary }
+  /platform/v1/whatsapp/contacts:
+    get:
+      tags: [W1]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Tenant-scoped contact list }
+    post:
+      tags: [W1]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Durable contact created }
+        "422": { description: Contact validation failed }
+  /platform/v1/whatsapp/contacts/{contactId}:
+    get:
+      tags: [W1]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: contactId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Contact readback }
+        "404": { description: Contact not found }
+    patch:
+      tags: [W1]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: contactId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Contact updated with optimistic version check }
+        "409": { description: Stale contact version }
+  /platform/v1/whatsapp/templates:
+    get:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Tenant-scoped template list }
+    post:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Durable local template draft created }
+  /platform/v1/whatsapp/templates/{templateId}:
+    get:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: templateId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Template readback }
+        "404": { description: Template not found }
+    patch:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: templateId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Template updated with optimistic version check }
+        "409": { description: Stale template version }
+  /platform/v1/whatsapp/campaigns:
+    get:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Tenant-scoped campaign list }
+    post:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Durable campaign draft created }
+        "422": { description: Campaign cannot enter ready state until validation passes }
+  /platform/v1/whatsapp/campaigns/{campaignId}:
+    get:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: campaignId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Campaign readback }
+        "404": { description: Campaign not found }
+    patch:
+      tags: [W2]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: campaignId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Campaign updated with optimistic version check }
+        "409": { description: Stale campaign version }
+        "422": { description: Campaign validation failed }
 components:
   securitySchemes:
     bearerAuth:
