@@ -71,6 +71,7 @@ paths:
   /platform/v1/whatsapp/messages:
     post:
       tags: [W2]
+      security: [{ bearerAuth: [] }]
       description: Submit an eligible WhatsApp effect to Middleware V3. Tenant/actor are derived from authenticated request context.
       parameters:
         - { name: X-Tenant-ID, in: header, required: true, schema: { type: string } }
@@ -229,6 +230,7 @@ paths:
         "200": { description: Authorized replay attempted with audit lineage }
   /platform/v1/whatsapp/operations/{operation_id}:
     get:
+      security: [{ bearerAuth: [] }]
       description: Read the authoritative Middleware V3 operation through the WhatsApp application boundary.
       parameters:
         - in: path

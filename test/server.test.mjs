@@ -34,12 +34,31 @@ test("production send is fail-closed by default", async () => {
   await withServer({}, async (base) => {
     const res = await fetch(base + "/platform/v1/whatsapp/messages", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-tenant-id": "TEST_SYN",
+        "x-actor-id": "agent-1"
+      },
       body: JSON.stringify({})
     });
     assert.equal(res.status, 423);
     const body = await res.json();
     assert.equal(body.error.code, "whatsapp_production_send_disabled");
+  });
+});
+
+
+
+test("message submission authenticates before exposing production gates", async () => {
+  await withServer({}, async (base) => {
+    const res = await fetch(base + "/platform/v1/whatsapp/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({})
+    });
+    assert.equal(res.status, 401);
+    const body = await res.json();
+    assert.equal(body.error.code, "tenant_required");
   });
 });
 

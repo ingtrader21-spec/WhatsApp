@@ -119,6 +119,7 @@ export function createApp(config = loadConfig(), options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/platform/v1/whatsapp/messages") {
+        const identity = authorizeOperator(req, config, READ_ROLES);
         const body = await readJson(req);
         if (!config.productionSend) {
           return json(res, 423, {
@@ -146,7 +147,6 @@ export function createApp(config = loadConfig(), options = {}) {
           return json(res, 403, { error: { code: "recipient_not_eligible", reasons: eligibility.reasons, retryable: false } });
         }
 
-        const identity = authorizeOperator(req, config, READ_ROLES);
         const headerTenant = String(req.headers["x-tenant-id"] || identity.tenantId || "");
         if (headerTenant && identity.tenantId && headerTenant !== identity.tenantId) {
           throw new DomainError("tenant_mismatch", "x-tenant-id must match authenticated tenant", 403);
