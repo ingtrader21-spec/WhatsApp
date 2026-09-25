@@ -20,6 +20,7 @@ export function loadConfig(env = process.env) {
     externalRecipients: asBool(env.WHATSAPP_EXTERNAL_RECIPIENTS),
     middlewareBaseUrl: env.MIDDLEWARE_BASE_URL || "http://middleware-integration-api:8095",
     middlewareCommandPath: env.MIDDLEWARE_COMMAND_PATH || "/platform/v1/commands",
+    middlewareOperationPathPrefix: env.MIDDLEWARE_OPERATION_PATH_PREFIX || "/platform/v1/operations/",
     middlewareCommandType: env.MIDDLEWARE_COMMAND_TYPE || "",
     middlewareTarget: env.MIDDLEWARE_TARGET || "",
     middlewareCapability: env.MIDDLEWARE_CAPABILITY || "",
