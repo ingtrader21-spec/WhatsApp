@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import http from "node:http";
 import crypto from "node:crypto";
 import { loadConfig } from "./config.mjs";
@@ -436,7 +437,7 @@ export function createApp(config = loadConfig(), options = {}) {
   });
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, "/")}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config = loadConfig();
   createApp(config).listen(config.port, "0.0.0.0", () => {
     console.log(JSON.stringify({ service: "codestra-whatsapp-app", port: config.port, production_send: config.productionSend }));
