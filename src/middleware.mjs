@@ -9,6 +9,8 @@ export async function submitMiddlewareCommand(config, input, authorization) {
   const commandId = requireString(input.command_id, "command_id");
   requireString(authorization, "Authorization");
 
+  const campaignId = requireString(input.campaign_id ?? input.business_context?.campaign_id, "campaign_id");
+  const businessContext = { ...(input.business_context ?? {}), campaign_id: campaignId };
   const envelope = {
     command_id: commandId,
     command_type: commandType,
@@ -19,10 +21,11 @@ export async function submitMiddlewareCommand(config, input, authorization) {
     idempotency_key: idempotencyKey,
     payload: {
       channel: "whatsapp",
+      campaign_id: campaignId,
       recipient: input.recipient,
       instance_id: input.instance_id ?? null,
       message: input.message,
-      business_context: input.business_context ?? {}
+      business_context: businessContext
     }
   };
   if (config.middlewareTarget) envelope.target = config.middlewareTarget;
@@ -35,6 +38,7 @@ export async function submitMiddlewareCommand(config, input, authorization) {
       authorization,
       "content-type": "application/json",
       "x-tenant-id": tenantId,
+      "x-command-id": commandId,
       "x-correlation-id": correlationId,
       "idempotency-key": idempotencyKey
     },
@@ -52,4 +56,28 @@ export async function submitMiddlewareCommand(config, input, authorization) {
     envelope,
     middleware: body
   };
+}
+
+
+export async function readMiddlewareOperation(config, operationId, authorization, tenantId, correlationId) {
+  requireString(operationId, "operation_id");
+  requireString(authorization, "Authorization");
+  requireString(tenantId, "tenant_id");
+  const correlation = requireString(correlationId, "correlation_id");
+
+  const path = `${config.middlewareOperationPathPrefix}${encodeURIComponent(operationId)}`;
+  const url = new URL(path, config.middlewareBaseUrl).toString();
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      authorization,
+      "x-tenant-id": tenantId,
+      "x-correlation-id": correlation
+    },
+    signal: AbortSignal.timeout(10000)
+  });
+  const raw = await response.text();
+  let body;
+  try { body = raw ? JSON.parse(raw) : null; } catch { body = { raw }; }
+  return { ok: response.ok, status: response.status, middleware: body };
 }

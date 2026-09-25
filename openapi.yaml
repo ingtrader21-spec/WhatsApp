@@ -71,10 +71,19 @@ paths:
   /platform/v1/whatsapp/messages:
     post:
       tags: [W2]
-      description: Submit an eligible WhatsApp effect to Middleware V3. Fail-closed by default.
+      description: Submit an eligible WhatsApp effect to Middleware V3. Tenant/actor are derived from authenticated request context.
+      parameters:
+        - { name: X-Tenant-ID, in: header, required: true, schema: { type: string } }
+        - { name: X-Command-ID, in: header, required: false, schema: { type: string } }
+        - { name: X-Correlation-ID, in: header, required: false, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8 } }
       responses:
         "202": { description: Middleware accepted }
-        "403": { description: Recipient not eligible }
+        "400": { description: Invalid request }
+        "401": { description: Authentication required }
+        "403": { description: Recipient, tenant, or role denied }
+        "409": { description: Header/body correlation or idempotency mismatch }
+        "415": { description: JSON content type required }
         "423": { description: Production/external sends disabled }
         "503": { description: Middleware WhatsApp command family not registered/configured }
   /platform/v1/whatsapp/conversations:
@@ -218,6 +227,19 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         "200": { description: Authorized replay attempted with audit lineage }
+  /platform/v1/whatsapp/operations/{operation_id}:
+    get:
+      description: Read the authoritative Middleware V3 operation through the WhatsApp application boundary.
+      parameters:
+        - in: path
+          name: operation_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Middleware V3 operation status }
+        "401": { description: Authentication required }
+        "403": { description: Tenant or role denied }
+        "404": { description: Operation not found }
 components:
   securitySchemes:
     bearerAuth:

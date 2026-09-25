@@ -2,7 +2,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { loadConfig } from "./config.mjs";
 import { DomainError, evaluateEligibility, requireString, validateCampaign } from "./domain.mjs";
-import { submitMiddlewareCommand } from "./middleware.mjs";
+import { readMiddlewareOperation, submitMiddlewareCommand } from "./middleware.mjs";
 import { authorizeInternal, authorizeOperator } from "./auth.mjs";
 import { ConversationService } from "./w3/service.mjs";
 
@@ -11,7 +11,15 @@ const READ_ROLES = ["whatsapp_agent", "whatsapp_supervisor", "whatsapp_admin"];
 const SUPERVISOR_ROLES = ["whatsapp_supervisor", "whatsapp_admin"];
 const ADMIN_ROLES = ["whatsapp_admin"];
 
+function requireJsonContentType(req) {
+  const contentType = String(req.headers["content-type"] || "").toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    throw new DomainError("unsupported_media_type", "content-type must be application/json", 415);
+  }
+}
+
 async function readJson(req) {
+  requireJsonContentType(req);
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {
@@ -27,7 +35,14 @@ async function readJson(req) {
 }
 
 function json(res, status, body, headers = {}) {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
+  const correlation = typeof body?.correlation_id === "string" ? { "x-correlation-id": body.correlation_id } : {};
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    ...correlation,
+    ...headers
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -43,6 +58,8 @@ function routeMatch(pathname, expression) {
 
 export function createApp(config = loadConfig(), options = {}) {
   const w3 = options.w3Service || new ConversationService(config, options.w3Options);
+  const submitCommand = options.submitMiddlewareCommand || submitMiddlewareCommand;
+  const readOperation = options.readMiddlewareOperation || readMiddlewareOperation;
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
@@ -129,23 +146,58 @@ export function createApp(config = loadConfig(), options = {}) {
           return json(res, 403, { error: { code: "recipient_not_eligible", reasons: eligibility.reasons, retryable: false } });
         }
 
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        const headerTenant = String(req.headers["x-tenant-id"] || identity.tenantId || "");
+        if (headerTenant && identity.tenantId && headerTenant !== identity.tenantId) {
+          throw new DomainError("tenant_mismatch", "x-tenant-id must match authenticated tenant", 403);
+        }
+
+        body.tenant_id = identity.tenantId;
+        body.requested_by = identity.subject;
+        body.idempotency_key ||= req.headers["idempotency-key"];
+        body.command_id ||= req.headers["x-command-id"] || crypto.randomUUID();
+        body.correlation_id ||= req.headers["x-correlation-id"] || crypto.randomUUID();
+
         requireString(body.tenant_id, "tenant_id");
         requireString(body.requested_by, "requested_by");
         requireString(body.idempotency_key, "idempotency_key", 8);
         requireString(body.recipient, "recipient");
-
-        body.command_id ||= crypto.randomUUID();
-        body.correlation_id ||= crypto.randomUUID();
+        requireString(body.campaign_id ?? body.business_context?.campaign_id, "campaign_id");
+        if (req.headers["idempotency-key"] && req.headers["idempotency-key"] !== body.idempotency_key) {
+          throw new DomainError("header_body_mismatch", "Idempotency-Key must match request body", 409);
+        }
+        if (req.headers["x-correlation-id"] && req.headers["x-correlation-id"] !== body.correlation_id) {
+          throw new DomainError("header_body_mismatch", "X-Correlation-ID must match request body", 409);
+        }
+        if (req.headers["x-command-id"] && req.headers["x-command-id"] !== body.command_id) {
+          throw new DomainError("header_body_mismatch", "X-Command-ID must match request body", 409);
+        }
         if (!body.message || typeof body.message !== "object") throw new DomainError("invalid_request", "message is required", 400);
 
         const authorization = req.headers.authorization;
-        const result = await submitMiddlewareCommand(config, body, authorization);
+        const result = await submitCommand(config, body, authorization);
+        const location = result.middleware?.operation_id
+          ? `/platform/v1/whatsapp/operations/${result.middleware.operation_id}`
+          : "";
         return json(res, result.status, {
           command_authority: "middleware-v3",
           command_id: body.command_id,
           correlation_id: body.correlation_id,
           middleware: result.middleware
-        }, { location: result.middleware?.operation_id ? `/platform/v1/operations/${result.middleware.operation_id}` : "" });
+        }, location ? { location } : {});
+      }
+
+      const operation = routeMatch(url.pathname, /^\/platform\/v1\/whatsapp\/operations\/(?<operationId>[^/]+)$/);
+      if (req.method === "GET" && operation) {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        const correlationId = String(req.headers["x-correlation-id"] || crypto.randomUUID());
+        const authorization = req.headers.authorization;
+        const result = await readOperation(config, operation.operationId, authorization, identity.tenantId, correlationId);
+        return json(res, result.status, {
+          command_authority: "middleware-v3",
+          correlation_id: correlationId,
+          middleware: result.middleware
+        });
       }
 
       if (req.method === "GET" && url.pathname === "/platform/v1/whatsapp/conversations") {
