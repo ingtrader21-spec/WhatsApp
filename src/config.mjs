@@ -28,6 +28,7 @@ export function loadConfig(env = process.env) {
     internalApiToken: env.WHATSAPP_INTERNAL_API_TOKEN || "",
     authIssuer: env.WHATSAPP_AUTH_ISSUER || "",
     authAudience: env.WHATSAPP_AUTH_AUDIENCE || "codestra-whatsapp",
+    authAzp: env.WHATSAPP_AUTH_AZP || "codestra-whatsapp-frontend",
     authPublicKey: (env.WHATSAPP_AUTH_PUBLIC_KEY || "").replace(/\\n/g, "\n"),
     authRequired,
     maxInboundAttempts: Number(env.WHATSAPP_MAX_INBOUND_ATTEMPTS || 5),
