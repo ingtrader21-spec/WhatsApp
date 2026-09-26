@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { loadConfig } from "./config.mjs";
 import { DomainError, evaluateEligibility, requireString, validateCampaign } from "./domain.mjs";
 import { readMiddlewareOperation, submitMiddlewareCommand } from "./middleware.mjs";
+import { buildAiDraftCommand, readAiDraft, submitAiDraft } from "./ai.mjs";
 import { authorizeInternal, authorizeOperator } from "./auth.mjs";
 import { ConversationService } from "./w3/service.mjs";
 import { BusinessStore } from "./business/store.mjs";
@@ -63,6 +64,8 @@ export function createApp(config = loadConfig(), options = {}) {
   const business = options.businessStore || new BusinessStore({ dataDir: config.dataDir });
   const submitCommand = options.submitMiddlewareCommand || submitMiddlewareCommand;
   const readOperation = options.readMiddlewareOperation || readMiddlewareOperation;
+  const submitDraft = options.submitAiDraft || submitAiDraft;
+  const readDraft = options.readAiDraft || readAiDraft;
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
@@ -96,6 +99,8 @@ export function createApp(config = loadConfig(), options = {}) {
           middleware_command_type_configured: Boolean(config.middlewareCommandType),
           w3_durable_store_ready: true,
           business_store_ready: true,
+          ai_drafts_enabled: config.aiDraftEnabled,
+          ai_autoreply_enabled: config.aiAutoreply,
           registry_dependency: config.middlewareCommandType ? null : "Middleware V3 WhatsApp command family must be registered before sends"
         });
       }
@@ -366,6 +371,52 @@ export function createApp(config = loadConfig(), options = {}) {
         const identity = authorizeOperator(req, config, READ_ROLES);
         await w3.ready();
         return json(res, 200, { items: w3.timeline(identity, timeline.conversationId) });
+      }
+
+
+      if (req.method === "POST" && url.pathname === "/platform/v1/whatsapp/ai/drafts") {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        if (!config.aiDraftEnabled) {
+          throw new DomainError("ai_drafts_disabled", "AI-assisted drafting is disabled", 423);
+        }
+        const body = await readJson(req);
+        const conversationId = requireString(body.conversation_id, "conversation_id");
+        await w3.ready();
+        const currentConversation = w3.getConversation(identity, conversationId);
+        const currentTimeline = w3.timeline(identity, conversationId);
+        const command = buildAiDraftCommand(identity, currentConversation, currentTimeline, body);
+        const result = await submitDraft(config, req.headers.authorization, command);
+        return json(res, result.status, {
+          ai_mode: "human_review_draft",
+          auto_send: false,
+          command_id: command.command_id,
+          correlation_id: command.correlation_id,
+          middleware: result.payload
+        }, { location: "/platform/v1/whatsapp/ai/drafts/" + command.command_id });
+      }
+
+      const aiDraft = routeMatch(url.pathname, /^\/platform\/v1\/whatsapp\/ai\/drafts\/(?<commandId>[^/]+)$/);
+      if (req.method === "GET" && aiDraft) {
+        authorizeOperator(req, config, READ_ROLES);
+        if (!config.aiDraftEnabled) throw new DomainError("ai_drafts_disabled", "AI-assisted drafting is disabled", 423);
+        const result = await readDraft(config, req.headers.authorization, aiDraft.commandId, false);
+        return json(res, result.status, {
+          ai_mode: "human_review_draft",
+          auto_send: false,
+          middleware: result.payload
+        });
+      }
+
+      const aiDraftResult = routeMatch(url.pathname, /^\/platform\/v1\/whatsapp\/ai\/drafts\/(?<commandId>[^/]+)\/result$/);
+      if (req.method === "GET" && aiDraftResult) {
+        authorizeOperator(req, config, READ_ROLES);
+        if (!config.aiDraftEnabled) throw new DomainError("ai_drafts_disabled", "AI-assisted drafting is disabled", 423);
+        const result = await readDraft(config, req.headers.authorization, aiDraftResult.commandId, true);
+        return json(res, result.status, {
+          ai_mode: "human_review_draft",
+          auto_send: false,
+          middleware: result.payload
+        });
       }
 
       const claim = routeMatch(url.pathname, /^\/platform\/v1\/whatsapp\/conversations\/(?<conversationId>[^/]+)\/claim$/);

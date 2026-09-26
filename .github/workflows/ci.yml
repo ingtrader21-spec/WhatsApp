@@ -2,9 +2,9 @@ name: WhatsApp W3 quality
 
 on:
   pull_request:
-    branches: [development, testing, staging, deployment, main]
-  push:
     branches: [development, testing, staging, deployment, main, "feature/**"]
+  push:
+    branches: [development, testing, staging, deployment, main, "feature/**", "impl/**"]
 
 permissions:
   contents: read
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   node-quality:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, appolon, whatsapp-backend]
     strategy:
       fail-fast: false
       matrix:

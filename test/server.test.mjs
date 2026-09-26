@@ -431,3 +431,98 @@ test("frontend CORS is explicit allowlist and fails closed for other origins", a
     assert.equal(denied.headers.get("access-control-allow-origin"), null);
   });
 });
+
+
+test("AI draft route is human-review-only and proxies governed Middleware AI command", async () => {
+  let captured;
+  const fakeW3 = {
+    ready: async () => {},
+    getConversation: (identity, id) => ({
+      conversation_id: id,
+      tenant_id: identity.tenantId,
+      customer_identity: "+18095550100",
+      business_identity: "+18095550999"
+    }),
+    timeline: () => [
+      { type: "message", data: { direction: "inbound", content: { type: "text", text: "Can you help me?" }, created_at: "2026-09-25T20:00:00Z" } }
+    ]
+  };
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codestra-whatsapp-ai-"));
+  const config = loadConfig({
+    PORT: "0",
+    WHATSAPP_DATA_DIR: dataDir,
+    WHATSAPP_AUTH_REQUIRED: "false",
+    WHATSAPP_INTERNAL_API_TOKEN: "test-internal",
+    WHATSAPP_AI_DRAFTS_ENABLED: "true"
+  });
+  const server = createApp(config, {
+    w3Service: fakeW3,
+    submitAiDraft: async (_config, authorization, command) => {
+      captured = { authorization, command };
+      return { status: 202, payload: { command_id: command.command_id, status: "PENDING" } };
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(base + "/platform/v1/whatsapp/ai/drafts", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer passthrough",
+        "x-tenant-id": "11111111-1111-4111-8111-111111111111",
+        "x-actor-id": "agent-1"
+      },
+      body: JSON.stringify({ conversation_id: "conv-1", action: "suggest_reply" })
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.ai_mode, "human_review_draft");
+    assert.equal(body.auto_send, false);
+    assert.equal(captured.authorization, "Bearer passthrough");
+    assert.equal(captured.command.input.response_contract.auto_send, false);
+    assert.equal(captured.command.input.response_contract.no_provider_effects, true);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("AI draft route fails closed while feature is disabled", async () => {
+  const fakeW3 = {
+    ready: async () => {},
+    getConversation: () => { throw new Error("must not load conversation while disabled"); },
+    timeline: () => []
+  };
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codestra-whatsapp-ai-disabled-"));
+  const config = loadConfig({
+    PORT: "0",
+    WHATSAPP_DATA_DIR: dataDir,
+    WHATSAPP_AUTH_REQUIRED: "false",
+    WHATSAPP_INTERNAL_API_TOKEN: "test-internal",
+    WHATSAPP_AI_DRAFTS_ENABLED: "false"
+  });
+  const server = createApp(config, { w3Service: fakeW3 });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(base + "/platform/v1/whatsapp/ai/drafts", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer passthrough",
+        "x-tenant-id": "11111111-1111-4111-8111-111111111111",
+        "x-actor-id": "agent-1"
+      },
+      body: JSON.stringify({ conversation_id: "conv-1", action: "suggest_reply" })
+    });
+    assert.equal(response.status, 423);
+    const body = await response.json();
+    assert.equal(body.error.code, "ai_drafts_disabled");
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
