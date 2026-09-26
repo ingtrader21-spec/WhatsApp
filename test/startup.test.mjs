@@ -1,10 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
+async function allocatePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      const port = typeof address === "object" && address ? address.port : null;
+      probe.close((error) => {
+        if (error) reject(error);
+        else if (!port) reject(new Error("failed to allocate test port"));
+        else resolve(port);
+      });
+    });
+  });
+}
+
 test("documented node entrypoint starts a reachable server on Linux", async () => {
-  const port = 18782;
+  const port = await allocatePort();
   const child = spawn(process.execPath, ["src/server.mjs"], {
     cwd: new URL("..", import.meta.url),
     env: {

@@ -79,7 +79,9 @@ export function createApp(config = loadConfig(), options = {}) {
       return res.writeHead(allowedOrigin ? 204 : 403).end();
     }
     try {
-      if (req.method === "GET" && url.pathname === "/healthz") {
+      const publicHealth = url.pathname === "/platform/v1/whatsapp/healthz";
+      if (req.method === "GET" && (url.pathname === "/healthz" || publicHealth)) {
+        if (publicHealth) authorizeOperator(req, config, READ_ROLES);
         return json(res, 200, {
           status: "ok",
           service: "codestra-whatsapp-app",
@@ -88,7 +90,9 @@ export function createApp(config = loadConfig(), options = {}) {
         });
       }
 
-      if (req.method === "GET" && url.pathname === "/readyz") {
+      const publicReady = url.pathname === "/platform/v1/whatsapp/readyz";
+      if (req.method === "GET" && (url.pathname === "/readyz" || publicReady)) {
+        if (publicReady) authorizeOperator(req, config, READ_ROLES);
         await Promise.all([w3.ready(), business.init()]);
         return json(res, 200, {
           status: "ready",

@@ -25,6 +25,22 @@ paths:
       tags: [Health]
       responses:
         "200": { description: Durable W3 store initialized and application ready }
+  /platform/v1/whatsapp/healthz:
+    get:
+      tags: [Health]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Authenticated WhatsApp application health }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /platform/v1/whatsapp/readyz:
+    get:
+      tags: [Health]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Authenticated WhatsApp application readiness }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /internal/metrics:
     get:
       tags: [W3 Internal]
