@@ -13,6 +13,7 @@ tags:
   - { name: W1 }
   - { name: W2 }
   - { name: W3 Conversations }
+  - { name: AI Drafts }
   - { name: W3 Internal }
 paths:
   /healthz:
@@ -87,6 +88,64 @@ paths:
         "415": { description: JSON content type required }
         "423": { description: Production/external sends disabled }
         "503": { description: Middleware WhatsApp command family not registered/configured }
+  /platform/v1/whatsapp/ai/drafts:
+    post:
+      tags: [AI Drafts]
+      security: [{ bearerAuth: [] }]
+      summary: Create a human-review-only AI draft
+      description: >-
+        Submits a governed ai.chat.v1 command through Middleware. This endpoint never sends
+        a WhatsApp message and never performs provider effects.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [conversation_id, action]
+              properties:
+                conversation_id: { type: string, minLength: 1 }
+                action:
+                  type: string
+                  enum: [suggest_reply, rewrite, shorter, professional, translate, summarize, knowledge_answer]
+                draft: { type: string, maxLength: 8000 }
+                language: { type: string, maxLength: 80 }
+                knowledge_query: { type: string, maxLength: 2000 }
+                idempotency_key: { type: string, minLength: 16, maxLength: 255 }
+      responses:
+        "202": { description: AI draft command accepted by Middleware }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "423": { description: AI-assisted drafting disabled }
+        "429": { description: AI quota/rate limit }
+        "503": { description: Middleware AI service unavailable }
+  /platform/v1/whatsapp/ai/drafts/{commandId}:
+    get:
+      tags: [AI Drafts]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: commandId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: AI draft command status readback }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "423": { description: AI-assisted drafting disabled }
+  /platform/v1/whatsapp/ai/drafts/{commandId}/result:
+    get:
+      tags: [AI Drafts]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: commandId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: AI draft result; output proposal still requires human review }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: AI result not ready }
+        "423": { description: AI-assisted drafting disabled }
   /platform/v1/whatsapp/conversations:
     get:
       tags: [W3 Conversations]

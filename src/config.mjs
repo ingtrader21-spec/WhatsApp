@@ -24,6 +24,8 @@ export function loadConfig(env = process.env) {
     middlewareCommandType: env.MIDDLEWARE_COMMAND_TYPE || "",
     middlewareTarget: env.MIDDLEWARE_TARGET || "",
     middlewareCapability: env.MIDDLEWARE_CAPABILITY || "",
+    middlewareAiPath: env.MIDDLEWARE_AI_PATH || "/api/v1/ai",
+    aiDraftEnabled: asBool(env.WHATSAPP_AI_DRAFTS_ENABLED),
     dataDir: path.resolve(env.WHATSAPP_DATA_DIR || "./var/whatsapp"),
     internalApiToken: env.WHATSAPP_INTERNAL_API_TOKEN || "",
     authIssuer: env.WHATSAPP_AUTH_ISSUER || "",
