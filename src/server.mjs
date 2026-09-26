@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import http from "node:http";
 import crypto from "node:crypto";
 import { loadConfig } from "./config.mjs";
@@ -5,6 +6,7 @@ import { DomainError, evaluateEligibility, requireString, validateCampaign } fro
 import { readMiddlewareOperation, submitMiddlewareCommand } from "./middleware.mjs";
 import { authorizeInternal, authorizeOperator } from "./auth.mjs";
 import { ConversationService } from "./w3/service.mjs";
+import { BusinessStore } from "./business/store.mjs";
 
 const MAX_BODY = 1024 * 1024;
 const READ_ROLES = ["whatsapp_agent", "whatsapp_supervisor", "whatsapp_admin"];
@@ -58,13 +60,28 @@ function routeMatch(pathname, expression) {
 
 export function createApp(config = loadConfig(), options = {}) {
   const w3 = options.w3Service || new ConversationService(config, options.w3Options);
+  const business = options.businessStore || new BusinessStore({ dataDir: config.dataDir });
   const submitCommand = options.submitMiddlewareCommand || submitMiddlewareCommand;
   const readOperation = options.readMiddlewareOperation || readMiddlewareOperation;
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
+    const requestOrigin = String(req.headers.origin || "").replace(/\/+$/, "");
+    const allowedOrigin = config.frontendOrigin && requestOrigin === config.frontendOrigin;
+    if (allowedOrigin) {
+      res.setHeader("access-control-allow-origin", requestOrigin);
+      res.setHeader("vary", "Origin");
+      res.setHeader("access-control-allow-methods", "GET,POST,PATCH,OPTIONS");
+      res.setHeader("access-control-allow-headers", "Authorization,Content-Type,X-Tenant-ID,X-Actor-ID,X-Command-ID,X-Correlation-ID,Idempotency-Key");
+      res.setHeader("access-control-expose-headers", "Location,X-Correlation-ID,X-Command-ID");
+    }
+    if (req.method === "OPTIONS") {
+      return res.writeHead(allowedOrigin ? 204 : 403).end();
+    }
     try {
-      if (req.method === "GET" && url.pathname === "/healthz") {
+      const publicHealth = url.pathname === "/platform/v1/whatsapp/healthz";
+      if (req.method === "GET" && (url.pathname === "/healthz" || publicHealth)) {
+        if (publicHealth) authorizeOperator(req, config, READ_ROLES);
         return json(res, 200, {
           status: "ok",
           service: "codestra-whatsapp-app",
@@ -73,13 +90,16 @@ export function createApp(config = loadConfig(), options = {}) {
         });
       }
 
-      if (req.method === "GET" && url.pathname === "/readyz") {
-        await w3.ready();
+      const publicReady = url.pathname === "/platform/v1/whatsapp/readyz";
+      if (req.method === "GET" && (url.pathname === "/readyz" || publicReady)) {
+        if (publicReady) authorizeOperator(req, config, READ_ROLES);
+        await Promise.all([w3.ready(), business.init()]);
         return json(res, 200, {
           status: "ready",
           safe_mode: !config.productionSend,
           middleware_command_type_configured: Boolean(config.middlewareCommandType),
           w3_durable_store_ready: true,
+          business_store_ready: true,
           registry_dependency: config.middlewareCommandType ? null : "Middleware V3 WhatsApp command family must be registered before sends"
         });
       }
@@ -118,6 +138,129 @@ export function createApp(config = loadConfig(), options = {}) {
         return json(res, result.valid ? 200 : 422, result);
       }
 
+      if (req.method === "GET" && url.pathname === "/platform/v1/whatsapp/me") {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        return json(res, 200, {
+          subject: identity.subject,
+          tenant_id: identity.tenantId,
+          roles: [...identity.roles].sort()
+        });
+      }
+
+      if (req.method === "GET" && url.pathname === "/platform/v1/whatsapp/dashboard") {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        await Promise.all([w3.ready(), business.init()]);
+        const conversationResult = w3.listConversations(identity, { limit: "100" });
+        const conversations = conversationResult.items || [];
+        return json(res, 200, {
+          business: business.summary(identity),
+          conversations: {
+            total: conversationResult.total || conversations.length,
+            unread: conversations.reduce((sum, item) => sum + Number(item.unread_count || 0), 0),
+            waiting_agent: conversations.filter((item) => item.status === "waiting_agent").length,
+            escalated: conversations.filter((item) => item.status === "escalated").length,
+            active: conversations.filter((item) => ["active", "waiting_customer", "reopened"].includes(item.status)).length
+          },
+          safe_mode: !config.productionSend
+        });
+      }
+
+      if (req.method === "GET" && url.pathname === "/platform/v1/whatsapp/contacts") {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        await business.init();
+        return json(res, 200, business.listContacts(identity, Object.fromEntries(url.searchParams)));
+      }
+
+      if (req.method === "POST" && url.pathname === "/platform/v1/whatsapp/contacts") {
+        const identity = authorizeOperator(req, config, SUPERVISOR_ROLES);
+        const body = await readJson(req);
+        await business.init();
+        return json(res, 201, await business.upsertContact(identity, body));
+      }
+
+      const contactRoute = routeMatch(url.pathname, /^\/platform\/v1\/whatsapp\/contacts\/(?<contactId>[^/]+)$/);
+      if (req.method === "GET" && contactRoute) {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        await business.init();
+        return json(res, 200, business.getContact(identity, contactRoute.contactId));
+      }
+      if (req.method === "PATCH" && contactRoute) {
+        const identity = authorizeOperator(req, config, SUPERVISOR_ROLES);
+        const body = await readJson(req);
+        await business.init();
+        const current = business.getContact(identity, contactRoute.contactId);
+        return json(res, 200, await business.upsertContact(identity, {
+          ...current,
+          ...body,
+          contact_id: contactRoute.contactId,
+          expected_version: body.expected_version
+        }));
+      }
+
+      if (req.method === "GET" && url.pathname === "/platform/v1/whatsapp/templates") {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        await business.init();
+        return json(res, 200, business.listTemplates(identity, Object.fromEntries(url.searchParams)));
+      }
+
+      if (req.method === "POST" && url.pathname === "/platform/v1/whatsapp/templates") {
+        const identity = authorizeOperator(req, config, SUPERVISOR_ROLES);
+        const body = await readJson(req);
+        await business.init();
+        return json(res, 201, await business.upsertTemplate(identity, body));
+      }
+
+      const templateRoute = routeMatch(url.pathname, /^\/platform\/v1\/whatsapp\/templates\/(?<templateId>[^/]+)$/);
+      if (req.method === "GET" && templateRoute) {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        await business.init();
+        return json(res, 200, business.getTemplate(identity, templateRoute.templateId));
+      }
+      if (req.method === "PATCH" && templateRoute) {
+        const identity = authorizeOperator(req, config, SUPERVISOR_ROLES);
+        const body = await readJson(req);
+        await business.init();
+        const current = business.getTemplate(identity, templateRoute.templateId);
+        return json(res, 200, await business.upsertTemplate(identity, {
+          ...current,
+          ...body,
+          template_id: templateRoute.templateId,
+          expected_version: body.expected_version
+        }));
+      }
+
+      if (req.method === "GET" && url.pathname === "/platform/v1/whatsapp/campaigns") {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        await business.init();
+        return json(res, 200, business.listCampaigns(identity, Object.fromEntries(url.searchParams)));
+      }
+
+      if (req.method === "POST" && url.pathname === "/platform/v1/whatsapp/campaigns") {
+        const identity = authorizeOperator(req, config, SUPERVISOR_ROLES);
+        const body = await readJson(req);
+        await business.init();
+        return json(res, 201, await business.upsertCampaign(identity, body));
+      }
+
+      const campaignRoute = routeMatch(url.pathname, /^\/platform\/v1\/whatsapp\/campaigns\/(?<campaignId>[^/]+)$/);
+      if (req.method === "GET" && campaignRoute) {
+        const identity = authorizeOperator(req, config, READ_ROLES);
+        await business.init();
+        return json(res, 200, business.getCampaign(identity, campaignRoute.campaignId));
+      }
+      if (req.method === "PATCH" && campaignRoute) {
+        const identity = authorizeOperator(req, config, SUPERVISOR_ROLES);
+        const body = await readJson(req);
+        await business.init();
+        const current = business.getCampaign(identity, campaignRoute.campaignId);
+        return json(res, 200, await business.upsertCampaign(identity, {
+          ...current,
+          ...body,
+          campaign_id: campaignRoute.campaignId,
+          expected_version: body.expected_version
+        }));
+      }
+
       if (req.method === "POST" && url.pathname === "/platform/v1/whatsapp/messages") {
         const identity = authorizeOperator(req, config, READ_ROLES);
         const body = await readJson(req);
@@ -135,6 +278,15 @@ export function createApp(config = loadConfig(), options = {}) {
           return json(res, 503, {
             error: { code: "middleware_whatsapp_command_unregistered", message: "Set MIDDLEWARE_COMMAND_TYPE only after the V3 registry entry is reviewed and deployed", retryable: false }
           });
+        }
+
+        if (body.contact_id) {
+          await business.init();
+          const contact = business.getContact(identity, body.contact_id);
+          body.recipient = contact.phone;
+          body.consent_status = contact.consent_status;
+          body.suppressed = contact.suppressed;
+          body.opted_out = contact.opted_out;
         }
 
         const eligibility = evaluateEligibility({
@@ -289,7 +441,7 @@ export function createApp(config = loadConfig(), options = {}) {
   });
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, "/")}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config = loadConfig();
   createApp(config).listen(config.port, "0.0.0.0", () => {
     console.log(JSON.stringify({ service: "codestra-whatsapp-app", port: config.port, production_send: config.productionSend }));

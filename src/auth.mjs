@@ -28,6 +28,7 @@ export function verifyJwtRs256(token, config, nowSeconds = Math.floor(Date.now()
   if (payload.nbf !== undefined && Number(payload.nbf) > nowSeconds) throw new DomainError("token_not_active", "JWT not active yet", 401);
   if (config.authIssuer && payload.iss !== config.authIssuer) throw new DomainError("invalid_token", "JWT issuer mismatch", 401);
   if (config.authAudience && !audienceMatches(payload.aud, config.authAudience)) throw new DomainError("invalid_token", "JWT audience mismatch", 401);
+  if (config.authAzp && payload.azp !== config.authAzp) throw new DomainError("invalid_token", "JWT authorized party mismatch", 401);
   return payload;
 }
 

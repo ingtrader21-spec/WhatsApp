@@ -15,13 +15,15 @@ test("RS256 verification enforces issuer, audience and Keycloak role extraction"
   const config = {
     authPublicKey: publicKey.export({ type: "spki", format: "pem" }),
     authIssuer: "https://auth.codestra.test/realms/codestra",
-    authAudience: "codestra-whatsapp"
+    authAudience: "codestra-whatsapp",
+    authAzp: "codestra-whatsapp-frontend"
   };
   const raw = token(privateKey, {
     sub: "agent-123",
     tenant_id: "11111111-1111-4111-8111-111111111111",
     iss: config.authIssuer,
     aud: config.authAudience,
+    azp: config.authAzp,
     exp: Math.floor(Date.now() / 1000) + 60,
     realm_access: { roles: ["whatsapp_agent"] }
   });
@@ -39,4 +41,28 @@ test("tampered RS256 token fails closed", () => {
   const [h, p, s] = raw.split(".");
   const tampered = `${h}.${Buffer.from(JSON.stringify({ sub: "admin", tenant_id: "other", iss: "issuer", aud: "aud", exp: Math.floor(Date.now() / 1000) + 60 })).toString("base64url")}.${s}`;
   assert.throws(() => verifyJwtRs256(tampered, config), (error) => error.code === "invalid_token" && error.status === 401);
+});
+
+
+test("valid token from another Keycloak client is rejected", () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const config = {
+    authPublicKey: publicKey.export({ type: "spki", format: "pem" }),
+    authIssuer: "https://auth.codestra.co/realms/codestra",
+    authAudience: "codestra-whatsapp",
+    authAzp: "codestra-whatsapp-frontend"
+  };
+  const raw = token(privateKey, {
+    sub: "agent-123",
+    tenant_id: "tenant-1",
+    iss: config.authIssuer,
+    aud: config.authAudience,
+    azp: "another-browser-client",
+    exp: Math.floor(Date.now() / 1000) + 60,
+    realm_access: { roles: ["whatsapp_agent"] }
+  });
+  assert.throws(
+    () => verifyJwtRs256(raw, config),
+    (error) => error.code === "invalid_token" && error.status === 401
+  );
 });

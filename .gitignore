@@ -3,3 +3,4 @@ var/
 .env
 *.log
 .DS_Store
+*.bak.*

@@ -28,10 +28,12 @@ export function loadConfig(env = process.env) {
     internalApiToken: env.WHATSAPP_INTERNAL_API_TOKEN || "",
     authIssuer: env.WHATSAPP_AUTH_ISSUER || "",
     authAudience: env.WHATSAPP_AUTH_AUDIENCE || "codestra-whatsapp",
+    authAzp: env.WHATSAPP_AUTH_AZP || "codestra-whatsapp-frontend",
     authPublicKey: (env.WHATSAPP_AUTH_PUBLIC_KEY || "").replace(/\\n/g, "\n"),
     authRequired,
     maxInboundAttempts: Number(env.WHATSAPP_MAX_INBOUND_ATTEMPTS || 5),
     baseRetryMs: Number(env.WHATSAPP_BASE_RETRY_MS || 1000),
-    maxPageSize: Number(env.WHATSAPP_MAX_PAGE_SIZE || 100)
+    maxPageSize: Number(env.WHATSAPP_MAX_PAGE_SIZE || 100),
+    frontendOrigin: String(env.WHATSAPP_FRONTEND_ORIGIN || "").replace(/\/+$/, "")
   });
 }
