@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   node-quality:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, appolon, whatsapp-backend]
     strategy:
       fail-fast: false
       matrix:
