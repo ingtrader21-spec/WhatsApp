@@ -2,9 +2,9 @@ name: WhatsApp W3 quality
 
 on:
   pull_request:
-    branches: [development, testing, staging, deployment, main]
-  push:
     branches: [development, testing, staging, deployment, main, "feature/**"]
+  push:
+    branches: [development, testing, staging, deployment, main, "feature/**", "impl/**"]
 
 permissions:
   contents: read
